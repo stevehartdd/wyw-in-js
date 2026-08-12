@@ -4309,6 +4309,62 @@ describe('transform static import value inlining', () => {
     }
   });
 
+  it('crashes when styled() wraps a component carrying a non-plain componentStyle-like property', async () => {
+    // Reproduces (without an external dependency) the real-world failure of
+    // Linaria's styled() wrapping a styled-components component: a
+    // forwardRef-shaped, otherwise-plain object whose componentStyle
+    // property is a class instance. Object.getPrototypeOf(target) is
+    // Object.prototype (same as styled-components' real runtime object), so
+    // the preval serializer walks into it and trips on the class instance.
+    // This test pins today's crash; see issue-draft-componentstyle-serialization.md.
+    const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
+    const entryFile = join(root, 'entry.js');
+    const baseFile = join(root, 'StyledComponentsLike.js');
+    const cache = new TransformCacheCollection();
+
+    writeFileSync(
+      baseFile,
+      dedent`
+        class ComponentStyle {
+          constructor() {
+            this.rules = ['color: red;'];
+          }
+        }
+
+        export const Base = {
+          $$typeof: Symbol.for('react.forward_ref'),
+          render: (props) => null,
+          componentStyle: new ComponentStyle(),
+        };
+      `
+    );
+    writeFileSync(
+      entryFile,
+      dedent`
+        import { styled } from 'test-styled-processor';
+        import { Base } from './StyledComponentsLike.js';
+
+        export const Derived = styled(Base)\`
+          font-weight: bold;
+        \`;
+      `
+    );
+
+    try {
+      await expect(runTransform(root, entryFile, cache)).rejects.toThrow(
+        '[wyw-in-js] __wywPreval'
+      );
+      await expect(runTransform(root, entryFile, cache)).rejects.toThrow(
+        'unsupported non-plain object'
+      );
+      // Desired post-fix behavior (once a direction from
+      // issue-draft-componentstyle-serialization.md is picked): this should
+      // not throw, and `result.cssText` should contain 'font-weight:bold'.
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('inlines nested styled metadata object values with runtime bases without eval', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wyw-static-import-'));
     const entryFile = join(root, 'entry.js');
